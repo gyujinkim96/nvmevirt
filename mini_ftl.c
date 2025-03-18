@@ -2,6 +2,7 @@
 
 #include <linux/ktime.h>
 #include <linux/sched/clock.h>
+#include <linux/vmalloc.h>
 
 #include "nvmev.h"
 #include "mini_ftl.h"
@@ -13,8 +14,10 @@ static void init_maptbl(struct mini_ftl *mini_ftl)
 	struct ssdparams *spp = &mini_ftl->ssd->sp;
 	unsigned long bitmap_size = (spp->tt_pgs + sizeof(char)) / sizeof(char);
 
-	mini_ftl->maptbl = vzmalloc(sizeof(ppo) * spp->tt_pgs);
-	mini_ftl->valid_ppos = vzmalloc(sizeof(char) * bitmap_size);
+	mini_ftl->maptbl = vmalloc(sizeof(ppo) * spp->tt_pgs);
+	mini_ftl->valid_ppos = vmalloc(sizeof(char) * bitmap_size);
+	MEMSET(mini_ftl->maptbl, 0, sizeof(ppo) * spp->tt_pgs);
+	MEMSET(mini_ftl->valid_ppos, 0, sizeof(char) * bitmap_size);
 }
 
 static void remove_maptbl(struct mini_ftl *mini_ftl)
@@ -34,10 +37,11 @@ static void init_write_pointers(struct mini_ftl *mini_ftl)
 	int i;
 	struct ssdparams *spp = &mini_ftl->ssd->sp;
 
-	mini_ftl->write_pointers = vzalloc(sizeof(int) * spp->tt_blks);
+	mini_ftl->write_pointers = vmalloc(sizeof(int) * spp->tt_blks);
+	MEMSET(mini_ftl->write_pointers, 0, sizeof(int) * spp->tt_blks);
 }
 
-static remove_write_pointers(struct mini_ftl *mini_ftl) 
+static void remove_write_pointers(struct mini_ftl *mini_ftl) 
 {
 	vfree(mini_ftl->write_pointers);
 }
@@ -50,19 +54,19 @@ static void mini_init_ftl(struct mini_ftl *mini_ftl, struct miniparams *mpp, str
 	init_maptbl(mini_ftl);
 	init_write_pointers(mini_ftl);
 
-	NVMEV_INFO("Init FTL instance with %d channels (%ld pages)\n", conv_ftl->ssd->sp.nchs,
-		   conv_ftl->ssd->sp.tt_pgs);
+	NVMEV_INFO("Init FTL instance with %d channels (%ld pages)\n", mini_ftl->ssd->sp.nchs,
+		   mini_ftl->ssd->sp.tt_pgs);
 }
 
-uint64_t mixed_to_block_idx(uint64_t mixed) {
+static uint64_t mixed_to_block_idx(uint64_t mixed) {
 	return mixed >> sizeof(ppo);
 }
 
-bool is_valid_ppos(char *valid_ppos, uint64_t idx) {
+static bool is_valid_ppos(char *valid_ppos, uint64_t idx) {
 	return valid_ppos[idx / sizeof(char)] & (idx % sizeof(char));
 }
 
-int get_maximum_size(int cnt) {
+static int get_maximum_size(int cnt) {
 	int ret = 0;
 	int power = 1;
 
@@ -77,11 +81,13 @@ int get_maximum_size(int cnt) {
 uint64_t mixed_lpa_to_physical(struct mini_ftl *mini_ftl, uint64_t mixed_addr) {
 	uint64_t physical_block_idx = mixed_to_block_idx(mixed_addr);
 	ppo ppo = mini_ftl->maptbl[physical_block_idx];
-	struct ssdparams *ssp = mini_ftl->ssd->sp;
-	struct ppa ppa = 0;
+	struct ssdparams *ssp = &mini_ftl->ssd->sp;
+	struct ppa ppa;
 	int bit_cnt;
 
-	if (!is_valid_ppo(mini_ftl->valid_ppos, physical_block_idx)) {
+	ppa.ppa = 0;
+
+	if (!is_valid_ppos(mini_ftl->valid_ppos, physical_block_idx)) {
 		return -1;
 	}
 
@@ -89,15 +95,18 @@ uint64_t mixed_lpa_to_physical(struct mini_ftl *mini_ftl, uint64_t mixed_addr) {
 	return mixed_addr + ppo;
 }
 
-struct ppa mixed_lpa_to_ppa(struct mini_ftl *mini_ftl, uint64_t mixed_addr) {
+static struct ppa mixed_lpa_to_ppa(struct mini_ftl *mini_ftl, uint64_t mixed_addr) {
 	uint64_t physical_block_idx = mixed_to_block_idx(mixed_addr);
 	ppo ppo = mini_ftl->maptbl[physical_block_idx];
-	struct ssdparams *ssp = mini_ftl->ssd->sp;
-	struct ppa ppa = 0;
+	struct ssdparams *ssp = &mini_ftl->ssd->sp;
+	struct ppa ppa;
 	int bit_cnt;
 
-	if (!is_valid_ppo(mini_ftl->valid_ppos, physical_block_idx)) {
-		return UNMAPPED_PPA;
+	ppa.ppa = 0;
+
+	if (!is_valid_ppos(mini_ftl->valid_ppos, physical_block_idx)) {
+		ppa.ppa = UNMAPPED_PPA;
+		return ppa;
 	}
 
 	ppa.g.pg = ppo;
@@ -135,6 +144,7 @@ static bool mini_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvm
 	struct nand_cmd swr;
 
 	uint64_t pgs = 0, pg_off;
+	uint32_t status = NVME_SC_SUCCESS;
 
 	swr.type = USER_IO;
 	swr.cmd = NAND_READ;
@@ -144,7 +154,7 @@ static bool mini_read(struct nvmev_ns *ns, struct nvmev_request *req, struct nvm
 	for (lpn = start_lpn; lpn <= end_lpn; lpn += pgs) {
 		ppa = mixed_lpa_to_ppa(mini_ftl, lpn);
 
-		if (ppa == UNMAPPED_PPA) {
+		if (ppa.ppa == UNMAPPED_PPA) {
 			NVMEV_DEBUG_VERBOSE("lpn 0x%llx not mapped to valid ppa\n", lpn);
 			NVMEV_DEBUG_VERBOSE("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d\n",
 					ppa.g.ch, ppa.g.lun, ppa.g.blk,
@@ -202,7 +212,7 @@ static bool mini_write(struct nvmev_ns *ns, struct nvmev_request *req, struct nv
 
 	// todo error
 
-	mini_ftl->write_pointers[mixed_to_block_idx(slpn)] =+= nr_lba;
+	mini_ftl->write_pointers[mixed_to_block_idx(slpn)] += nr_lba;
 
 	nsecs_latest = nsecs_start;
 	nsecs_latest = ssd_advance_write_buffer(mini_ftl->ssd, nsecs_latest, LBA_TO_BYTE(nr_lba));
@@ -244,7 +254,7 @@ static bool mini_write(struct nvmev_ns *ns, struct nvmev_request *req, struct nv
 		}
 	}
 
-	out:
+	// out:
 	ret->status = status;
 	if ((cmd->control & NVME_RW_FUA) ||
 	    (spp->write_early_completion == 0)) /*Wait all flash operations*/
@@ -288,7 +298,7 @@ uint32_t cpu_nr_dispatcher) {
 	ssd_init_params(&spp, size, nr_parts);
 	ssd_init(ssd, &spp, cpu_nr_dispatcher);
 
-	mini_ftl = kmalloc(sizeof(struct zns_ftl) * nr_parts, GFP_KERNEL);
+	mini_ftl = kmalloc(sizeof(struct mini_ftl) * nr_parts, GFP_KERNEL);
 	mini_init_params(&mpp, &spp, size);
 	mini_init_ftl(mini_ftl, &mpp, ssd);
 

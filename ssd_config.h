@@ -251,6 +251,10 @@ static_assert((ZONE_SIZE % DIES_PER_ZONE) == 0);
 #define MDTS (6)
 #define CELL_MODE (CELL_MODE_MLC)
 
+
+#define LBA_BITS (9)
+#define LBA_SIZE (1)
+
 #define SSD_PARTITIONS (1)
 #define NAND_CHANNELS (8)
 #define LUNS_PER_NAND_CH (2)

@@ -677,7 +677,7 @@ static int nvmev_io_worker(void *data)
 						__do_perform_io(w->sqid, w->sq_entry);
 					}
 #elif (BASE_SSD == MINI_PROTOTYPE)
-					mini_ftl *mini_ftl;
+					struct mini_ftl *mini_ftl;
 					struct nvmev_submission_queue *sq = nvmev_vdev->sqes[w->sqid];
 					ns = &nvmev_vdev->ns[0];
 					mini_ftl = ns->ftls;

@@ -1,9 +1,9 @@
 # Select one of the targets to build
 #CONFIG_NVMEVIRT_NVM := y
-#CONFIG_NVMEVIRT_SSD := y
+CONFIG_NVMEVIRT_SSD := y
 #CONFIG_NVMEVIRT_ZNS := y
 #CONFIG_NVMEVIRT_KV := y
-CONFIG_NVMEVIRT_MINI := y
+#CONFIG_NVMEVIRT_MINI := y
 
 obj-m   := nvmev.o
 nvmev-objs := main.o pci.o admin.o io.o dma.o
