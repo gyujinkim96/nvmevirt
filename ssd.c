@@ -115,7 +115,7 @@ void ssd_init_params(struct ssdparams *spp, uint64_t capacity, uint32_t nparts)
 	spp->pg_rd_lat[CELL_TYPE_MSB] = NAND_READ_LATENCY_MSB;
 	spp->pg_rd_lat[CELL_TYPE_CSB] = NAND_READ_LATENCY_CSB;
 	spp->pg_wr_lat = NAND_PROG_LATENCY;
-	spp->blk_er_lat = NAND_ERASE_LATENCY;
+	spp->blk_er_lat = NAND_ERASE_LATENCY
 	spp->max_ch_xfer_size = MAX_CH_XFER_SIZE;
 
 	spp->fw_4kb_rd_lat = FW_4KB_READ_LATENCY;

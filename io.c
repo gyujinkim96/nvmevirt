@@ -7,6 +7,7 @@
 #include <linux/sched/clock.h>
 
 #include "nvmev.h"
+#include "mini_ftl.h"
 #include "dma.h"
 
 #if (SUPPORTED_SSD_TYPE(CONV) || SUPPORTED_SSD_TYPE(ZNS))
@@ -59,6 +60,72 @@ static unsigned int __do_perform_io(int sqid, int sq_entry)
 	size_t nsid = cmd->nsid - 1; // 0-based
 
 	offset = __cmd_io_offset(cmd);
+	length = __cmd_io_size(cmd);
+	remaining = length;
+
+	while (remaining) {
+		size_t io_size;
+		void *vaddr;
+		size_t mem_offs = 0;
+
+		prp_offs++;
+		if (prp_offs == 1) {
+			paddr = cmd->prp1;
+		} else if (prp_offs == 2) {
+			paddr = cmd->prp2;
+			if (remaining > PAGE_SIZE) {
+				paddr_list = kmap_atomic_pfn(PRP_PFN(paddr)) +
+					     (paddr & PAGE_OFFSET_MASK);
+				paddr = paddr_list[prp2_offs++];
+			}
+		} else {
+			paddr = paddr_list[prp2_offs++];
+		}
+
+		vaddr = kmap_atomic_pfn(PRP_PFN(paddr));
+
+		io_size = min_t(size_t, remaining, PAGE_SIZE);
+
+		if (paddr & PAGE_OFFSET_MASK) {
+			mem_offs = paddr & PAGE_OFFSET_MASK;
+			if (io_size + mem_offs > PAGE_SIZE)
+				io_size = PAGE_SIZE - mem_offs;
+		}
+
+		if (cmd->opcode == nvme_cmd_write ||
+		    cmd->opcode == nvme_cmd_zone_append) {
+			memcpy(nvmev_vdev->ns[nsid].mapped + offset, vaddr + mem_offs, io_size);
+		} else if (cmd->opcode == nvme_cmd_read) {
+			memcpy(vaddr + mem_offs, nvmev_vdev->ns[nsid].mapped + offset, io_size);
+		}
+
+		kunmap_atomic(vaddr);
+
+		remaining -= io_size;
+		offset += io_size;
+	}
+
+	if (paddr_list != NULL)
+		kunmap_atomic(paddr_list);
+
+	return length;
+}
+
+static unsigned int __do_perform_io_mixed(int sqid, int sq_entry, struct mini_ftl *mini_ftl)
+{
+	struct nvmev_submission_queue *sq = nvmev_vdev->sqes[sqid];
+	struct nvme_rw_command *cmd = &sq_entry(sq_entry).rw;
+	size_t offset;
+	size_t length, remaining;
+	int prp_offs = 0;
+	int prp2_offs = 0;
+	u64 paddr;
+	u64 mixed_addr;
+	u64 *paddr_list = NULL;
+	size_t nsid = cmd->nsid - 1; // 0-based
+
+
+	offset = mixed_lpa_to_physical(mini_ftl, cmd->slba) << LBA_BITS;
 	length = __cmd_io_size(cmd);
 	remaining = length;
 
@@ -609,6 +676,13 @@ static int nvmev_io_worker(void *data)
 					} else {
 						__do_perform_io(w->sqid, w->sq_entry);
 					}
+#elif (BASE_SSD == MINI_PROTOTYPE)
+					mini_ftl *mini_ftl;
+					struct nvmev_submission_queue *sq = nvmev_vdev->sqes[w->sqid];
+					ns = &nvmev_vdev->ns[0];
+					mini_ftl = ns->ftls;
+
+					__do_perform_io_mixed(w->sqid, w->sq_entry, mini_ftl);
 #else 
 					__do_perform_io(w->sqid, w->sq_entry);
 #endif
